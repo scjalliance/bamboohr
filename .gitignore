@@ -1,0 +1,22 @@
+# Secrets — never commit
+.secrets/
+*.env
+!*.env.example
+# Go build output
+/bin/
+/dist/
+/bamboohr
+*.test
+*.out
+coverage.*
+# Credentials
+*-credentials.json
+gcp-key*.json
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# SDD scratch (ledger, briefs, reports)
+.superpowers/
