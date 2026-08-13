@@ -40,10 +40,10 @@ custom tables). They are NOT reachable through the dataset API — only through
 `/api/v1/employees/{id|all}/tables/{alias}`:
 
     // One person's rows:
-    rows, _ := c.EmployeeTable(ctx, "42", "customTitles")
+    rows, _ := c.EmployeeTable(ctx, "42", "customTableAlias")
 
     // Every person's rows, in ONE request — prefer this for a whole population:
-    all, _ := c.AllEmployeeTables(ctx, "customTitles")
+    all, _ := c.AllEmployeeTables(ctx, "customTableAlias")
     byEmployee := bamboohr.TableRowsByEmployee(all)
 
 `ID` and `EmployeeID` are lifted out of each row; every other column lands in
@@ -51,8 +51,8 @@ custom tables). They are NOT reachable through the dataset API — only through
 accessors as a dataset record:
 
     for _, r := range rows {
-        title := r.Fields.String("customE-Sig")
-        if d, ok := r.Fields.Date("customDate1"); ok { /* ... */ }
+        title := r.Fields.String("customFieldA")
+        if d, ok := r.Fields.Date("customDateField"); ok { /* ... */ }
     }
 
 Table writes are not implemented — see the reserved API in `tables.go`.

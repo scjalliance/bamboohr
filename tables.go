@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// EmployeeTable reads every row of one employee table (e.g. "customTitles") for a
+// EmployeeTable reads every row of one employee table (e.g. "customTableAlias") for a
 // single employee, via GET /api/v1/employees/{id}/tables/{table}.
 func (c *Client) EmployeeTable(ctx context.Context, employeeID, table string) ([]TableRow, error) {
 	if employeeID == "" {
@@ -30,7 +30,7 @@ func (c *Client) tableRows(ctx context.Context, employeeID, table string) ([]Tab
 		return nil, fmt.Errorf("bamboohr: table is required")
 	}
 	// Table aliases are tenant-defined and may need escaping (the live scjalliance
-	// tenant has aliases like "customDriver'sLicenseInformation").
+	// tenant has aliases like "customAlias'WithQuote").
 	path := "api/v1/employees/" + url.PathEscape(employeeID) + "/tables/" + url.PathEscape(table)
 
 	var raw []map[string]json.RawMessage
