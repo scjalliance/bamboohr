@@ -41,16 +41,3 @@ func (c *Client) Tables(ctx context.Context) ([]Table, error) {
 	}
 	return tables, nil
 }
-
-// jsonScalarString renders a JSON scalar (string or number) as a string,
-// trimming surrounding quotes from string-encoded values.
-func jsonScalarString(raw json.RawMessage) string {
-	s := string(raw)
-	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
-		var str string
-		if err := json.Unmarshal(raw, &str); err == nil {
-			return str
-		}
-	}
-	return s
-}

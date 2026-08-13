@@ -31,6 +31,31 @@ identity-sync; suitable for general use.
 
     // Metadata:
     fields, _ := c.Fields(ctx)
+    tables, _ := c.Tables(ctx)
+
+### Employee tables
+
+Employee *tables* hold many rows per person (job-info history, assets, tenant-defined
+custom tables). They are NOT reachable through the dataset API — only through
+`/api/v1/employees/{id|all}/tables/{alias}`:
+
+    // One person's rows:
+    rows, _ := c.EmployeeTable(ctx, "42", "customTitles")
+
+    // Every person's rows, in ONE request — prefer this for a whole population:
+    all, _ := c.AllEmployeeTables(ctx, "customTitles")
+    byEmployee := bamboohr.TableRowsByEmployee(all)
+
+`ID` and `EmployeeID` are lifted out of each row; every other column lands in
+`Fields`, keyed by the table's field alias, and reads through the same typed
+accessors as a dataset record:
+
+    for _, r := range rows {
+        title := r.Fields.String("customE-Sig")
+        if d, ok := r.Fields.Date("customDate1"); ok { /* ... */ }
+    }
+
+Table writes are not implemented — see the reserved API in `tables.go`.
 
 ### Dates
 
