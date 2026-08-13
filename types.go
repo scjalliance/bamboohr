@@ -103,6 +103,16 @@ type Table struct {
 	Alias string
 }
 
+// TableRow is one row of an employee table (e.g. a single "customTitles" entry).
+// ID and EmployeeID are lifted out of the row; every other column lands in Fields,
+// keyed by the table's field alias. BambooHR renders table cells as strings (a JSON
+// null becomes an absent/nil value), so use Record's typed accessors to read them.
+type TableRow struct {
+	ID         string // row id, unique within the table
+	EmployeeID string // the employee this row belongs to (matches the "eeid" dataset field)
+	Fields     Record // field alias → value
+}
+
 // ChangedEmployee is one entry from the changed-employees endpoint.
 type ChangedEmployee struct {
 	ID          string

@@ -28,7 +28,7 @@ func configFromEnv() (bamboohr.Config, error) {
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: bamboohr <meta-fields|employee|changed|dataset> [args]")
+		fmt.Fprintln(os.Stderr, "usage: bamboohr <meta-fields|meta-tables|employee|changed|dataset|table> [args]")
 		os.Exit(2)
 	}
 	cfg, err := configFromEnv()
@@ -44,6 +44,23 @@ func main() {
 	switch os.Args[1] {
 	case "meta-fields":
 		out, err := c.Fields(ctx)
+		emit(out, err)
+	case "meta-tables":
+		out, err := c.Tables(ctx)
+		emit(out, err)
+	case "table":
+		if len(os.Args) < 3 {
+			fatal(fmt.Errorf("usage: bamboohr table <alias> [--employee=<id>]"))
+		}
+		fs := flag.NewFlagSet("table", flag.ExitOnError)
+		employee := fs.String("employee", "", "employee id (default: every employee)")
+		fs.Parse(os.Args[3:])
+		if *employee != "" {
+			out, err := c.EmployeeTable(ctx, *employee, os.Args[2])
+			emit(out, err)
+			break
+		}
+		out, err := c.AllEmployeeTables(ctx, os.Args[2])
 		emit(out, err)
 	case "employee":
 		if len(os.Args) < 3 {
