@@ -70,9 +70,11 @@ func notSent(err error) bool {
 }
 
 // doWith is do with a retry policy. A non-idempotent request (nonIdempotent)
-// is retried only on 429, where BambooHR states it rejected the request. A
-// network error or 503 may come after the server already applied it, so a
-// retry could repeat the write (a duplicate table row); those return at once.
+// is retried only on 429, where BambooHR states it rejected the request, and
+// on dial or DNS failures, where it never reached the server. Any other
+// network error, or a 503, may come after the server applied it, so a retry
+// could repeat the write (a duplicate table row); those return at once,
+// wrapping ErrWriteOutcomeUnknown.
 func (c *Client) doWith(ctx context.Context, method, path string, body, out any, nonIdempotent bool) error {
 	var bodyBytes []byte
 	if body != nil {

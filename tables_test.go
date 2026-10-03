@@ -256,3 +256,19 @@ func TestDateMarshalsAsString(t *testing.T) {
 		t.Errorf("got %s %v", b, err)
 	}
 }
+
+// TestDateJSONRoundTrip: zero dates read and write as blank, and a date
+// round-trips.
+func TestDateJSONRoundTrip(t *testing.T) {
+	b, _ := json.Marshal(Record{"d": Date{}})
+	if string(b) != `{"d":""}` {
+		t.Errorf("zero date = %s", b)
+	}
+	var v struct{ D, Z, N Date }
+	if err := json.Unmarshal([]byte(`{"D":"2026-10-02","Z":"0000-00-00","N":null}`), &v); err != nil {
+		t.Fatal(err)
+	}
+	if v.D != (Date{Year: 2026, Month: 10, Day: 2}) || v.Z != (Date{}) || v.N != (Date{}) {
+		t.Errorf("got %+v", v)
+	}
+}

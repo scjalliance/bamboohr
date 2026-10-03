@@ -1,6 +1,7 @@
 package bamboohr
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"time"
@@ -77,9 +78,36 @@ func (d Date) String() string {
 }
 
 // MarshalJSON writes the date as "YYYY-MM-DD", the form BambooHR expects, so a
-// Date read from a row can be written back unchanged.
+// Date read from a row can be written back unchanged. The zero Date (what
+// Record.Date returns for a blank field) writes as "", a blank field.
 func (d Date) MarshalJSON() ([]byte, error) {
+	if d == (Date{}) {
+		return []byte(`""`), nil
+	}
 	return []byte(`"` + d.String() + `"`), nil
+}
+
+// UnmarshalJSON reads "YYYY-MM-DD"; "", null and "0000-00-00" read as the zero
+// Date.
+func (d *Date) UnmarshalJSON(b []byte) error {
+	var s string
+	if string(b) == "null" {
+		*d = Date{}
+		return nil
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		return fmt.Errorf("bamboohr: date: %w", err)
+	}
+	if s == "" || s == "0000-00-00" {
+		*d = Date{}
+		return nil
+	}
+	v, ok := ParseDate(s)
+	if !ok {
+		return fmt.Errorf("bamboohr: date %q is not YYYY-MM-DD", s)
+	}
+	*d = v
+	return nil
 }
 
 // ParseDate parses a bare "YYYY-MM-DD". It rejects empty strings and anything with
