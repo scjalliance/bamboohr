@@ -63,10 +63,13 @@ var ErrWriteOutcomeUnknown = errors.New("bamboohr: write outcome unknown")
 // caller-supplied RoundTripper could return such an error after sending, so
 // its errors are never taken as proof.
 func stdTransport(c *http.Client) bool {
-	if c.Transport == nil {
-		return true
+	t := c.Transport
+	if t == nil {
+		// nil means http.DefaultTransport, which a process may have replaced
+		// with a wrapper; check what it actually is.
+		t = http.DefaultTransport
 	}
-	_, ok := c.Transport.(*http.Transport)
+	_, ok := t.(*http.Transport)
 	return ok
 }
 
