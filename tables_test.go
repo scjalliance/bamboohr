@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // Payloads below mirror the real endpoint SHAPES (numeric id/employeeId, blank and
@@ -292,5 +294,27 @@ func TestWriteDoesNotFollowRedirect(t *testing.T) {
 	}
 	if followed.Load() != 0 {
 		t.Errorf("redirect followed %d times", followed.Load())
+	}
+}
+
+type dialErrorRT struct{ calls atomic.Int32 }
+
+func (d *dialErrorRT) RoundTrip(*http.Request) (*http.Response, error) {
+	d.calls.Add(1)
+	return nil, &net.OpError{Op: "dial", Err: errors.New("refused")}
+}
+
+// TestCustomTransportDialErrorNotTrusted: a custom RoundTripper's dial-looking
+// error is an unknown outcome, not a safe retry.
+func TestCustomTransportDialErrorNotTrusted(t *testing.T) {
+	rt := &dialErrorRT{}
+	c, err := New(Config{APIKey: "k", Subdomain: "acme", HTTPClient: &http.Client{Transport: rt}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.baseDelay = time.Millisecond
+	err = c.AddTableRow(context.Background(), "7", "t", Record{"a": "b"})
+	if rt.calls.Load() != 1 || !errors.Is(err, ErrWriteOutcomeUnknown) {
+		t.Errorf("calls %d err %v", rt.calls.Load(), err)
 	}
 }
