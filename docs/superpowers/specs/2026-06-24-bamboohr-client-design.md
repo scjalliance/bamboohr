@@ -150,7 +150,7 @@ func (c *Client) UpdateTableRow(ctx context.Context, employeeID, table, rowID st
 ```
 
 The create returns an empty 200, so `AddTableRow` cannot return the new row id;
-callers re-read the table and find the row id that was not there before. An add is not
+callers re-read the table and find the row by a value unique to the add. An add is not
 idempotent: it retries only on 429, and any transport error or 5xx wraps
 `ErrWriteOutcomeUnknown`.
 `Date` marshals as "YYYY-MM-DD".

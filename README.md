@@ -57,17 +57,30 @@ accessors as a dataset record:
 
 Writes use the v1_1 endpoints (the v1 ones were deprecated on 2026-07-08):
 
-    // Add a row. BambooHR returns no body, so snapshot the row ids first and
-    // find the new row as the id that was not there before.
-    before, _ := c.EmployeeTable(ctx, "42", "customTableAlias")
-    err := c.AddTableRow(ctx, "42", "customTableAlias", bamboohr.Record{"customFieldA": "x"})
-    if errors.Is(err, bamboohr.ErrWriteOutcomeUnknown) {
-        // The row may or may not exist. Do not add again until a re-read
-        // settles it.
+    // Add a row. BambooHR returns no body, so the new row's id is not known.
+    // Write a value unique to this add (here a request id) so a re-read can
+    // find exactly this row, and stop on any read error.
+    marker := "req-7f3a"
+    err := c.AddTableRow(ctx, "42", "customTableAlias",
+        bamboohr.Record{"customFieldA": "x", "customNote": marker})
+    if err != nil && !errors.Is(err, bamboohr.ErrWriteOutcomeUnknown) {
+        return err // the add was not applied
     }
-    after, _ := c.EmployeeTable(ctx, "42", "customTableAlias")
-    // rowID = the one id in after that is not in before. Zero or several new
-    // ids (another writer, or an unknown outcome) leave it unresolved.
+    // On success or an unknown outcome, re-read to find the row.
+    rows, err := c.EmployeeTable(ctx, "42", "customTableAlias")
+    if err != nil {
+        return err // still unresolved: do not add again or update anything
+    }
+    var matches []string
+    for _, r := range rows {
+        if r.Fields.String("customNote") == marker {
+            matches = append(matches, r.ID)
+        }
+    }
+    if len(matches) != 1 {
+        return fmt.Errorf("add unresolved: %d rows carry the marker", len(matches))
+    }
+    rowID := matches[0]
 
     // Change some fields of one row in place. A Date marshals as "YYYY-MM-DD".
     err = c.UpdateTableRow(ctx, "42", "customTableAlias", rowID,
@@ -76,10 +89,11 @@ Writes use the v1_1 endpoints (the v1 ones were deprecated on 2026-07-08):
 An add is not idempotent, so it is retried only on 429. Any transport error or
 5xx returns an error wrapping `ErrWriteOutcomeUnknown`. Re-read the table
 before adding again. A row whose fields match the add does not prove the add
-succeeded, since an identical row may already have existed. Compare row ids
-against a snapshot taken before the add, or a unique value written in the row,
-and leave the outcome unresolved if the re-read is still ambiguous. Updates
-retry like reads.
+succeeded, since an identical row may already have existed. Write a value
+unique to the add and find the row by it. A diff of row ids against a
+snapshot taken before the add is weaker, because another writer can add a
+row in between. If the re-read fails or stays ambiguous, leave the outcome
+unresolved. Updates retry like reads.
 
 ### Dates
 
