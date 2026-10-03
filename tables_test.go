@@ -272,3 +272,25 @@ func TestDateJSONRoundTrip(t *testing.T) {
 		t.Errorf("got %+v", v)
 	}
 }
+
+// TestWriteDoesNotFollowRedirect: a redirected write is an error, and the
+// redirect target is never called.
+func TestWriteDoesNotFollowRedirect(t *testing.T) {
+	var followed atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		followed.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer srv.Close()
+	c := testClient(t, srv)
+	if err := c.UpdateTableRow(context.Background(), "7", "t", "5", Record{"a": "b"}); err == nil {
+		t.Error("redirected update reported success")
+	}
+	if followed.Load() != 0 {
+		t.Errorf("redirect followed %d times", followed.Load())
+	}
+}

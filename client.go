@@ -84,6 +84,17 @@ func (c *Client) doWith(ctx context.Context, method, path string, body, out any,
 		}
 	}
 
+	// Never follow a redirect on a non-GET request. Go turns a redirected POST
+	// into a GET, so a write could "succeed" without running, and a redirect
+	// hop's dial failure would look like the write was never sent. A 3xx is
+	// returned as an error instead.
+	httpClient := c.cfg.HTTPClient
+	if method != http.MethodGet {
+		noRedirect := *httpClient
+		noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		httpClient = &noRedirect
+	}
+
 	maxAttempts := *c.cfg.MaxRetries + 1
 	var lastErr error
 	var delayHint time.Duration // Retry-After from the previous attempt, if any
@@ -107,7 +118,7 @@ func (c *Client) doWith(ctx context.Context, method, path string, body, out any,
 			req.Header.Set("User-Agent", c.cfg.UserAgent)
 		}
 
-		resp, err := c.cfg.HTTPClient.Do(req)
+		resp, err := httpClient.Do(req)
 		if err != nil {
 			// Transient network failures (reset, timeout, DNS blip) are retryable;
 			// a cancelled context is caught by wait() at the top of the next attempt.
