@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -47,12 +48,39 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, out any
 // do performs an authenticated JSON request with retry/backoff on 429/503 and
 // decodes a 2xx JSON body into out (if non-nil). Non-2xx → *APIError.
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
+	return c.doWith(ctx, method, path, body, out, false)
+}
+
+// ErrWriteOutcomeUnknown wraps a failed non-idempotent write (a table-row add)
+// that may or may not have been applied: a network error after the request
+// was sent, or any 5xx. Re-read before trying again; retrying blindly can
+// duplicate the row. Other errors mean the write was not applied.
+var ErrWriteOutcomeUnknown = errors.New("bamboohr: write outcome unknown")
+
+// doWith is do with a retry policy. A non-idempotent request (nonIdempotent)
+// is retried only on 429, where BambooHR states it rejected the request. Any
+// transport error or 5xx may come after the server applied it (and no
+// transport error proves otherwise, since a RoundTripper can send and then
+// fail), so it returns at once wrapping ErrWriteOutcomeUnknown; the caller
+// re-reads before trying again.
+func (c *Client) doWith(ctx context.Context, method, path string, body, out any, nonIdempotent bool) error {
 	var bodyBytes []byte
 	if body != nil {
 		var err error
 		if bodyBytes, err = json.Marshal(body); err != nil {
 			return fmt.Errorf("bamboohr: marshal body: %w", err)
 		}
+	}
+
+	// Never follow a redirect on a non-GET request. Go turns a redirected POST
+	// into a GET, so a write could "succeed" without running, and a redirect
+	// hop's dial failure would look like the write was never sent. A 3xx is
+	// returned as an error instead.
+	httpClient := c.cfg.HTTPClient
+	if method != http.MethodGet {
+		noRedirect := *httpClient
+		noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		httpClient = &noRedirect
 	}
 
 	maxAttempts := *c.cfg.MaxRetries + 1
@@ -78,19 +106,22 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 			req.Header.Set("User-Agent", c.cfg.UserAgent)
 		}
 
-		resp, err := c.cfg.HTTPClient.Do(req)
+		resp, err := httpClient.Do(req)
 		if err != nil {
 			// Transient network failures (reset, timeout, DNS blip) are retryable;
 			// a cancelled context is caught by wait() at the top of the next attempt.
-			// NOTE: this (like the 429/503 retry below) assumes idempotent requests —
-			// gate by method before adding non-idempotent writes (tables.go POST).
 			lastErr = fmt.Errorf("bamboohr: %s %s: %w", method, path, err)
+			if nonIdempotent {
+				return fmt.Errorf("%w: %w", ErrWriteOutcomeUnknown, lastErr)
+			}
 			delayHint = 0
 			continue
 		}
 
-		// 429 (too fast) and 503 (gateway overwhelmed) are both retryable.
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
+		// 429 (too fast) is always retryable. 503 (gateway overwhelmed) is
+		// retryable only for idempotent requests.
+		if resp.StatusCode == http.StatusTooManyRequests ||
+			(resp.StatusCode == http.StatusServiceUnavailable && !nonIdempotent) {
 			delayHint = parseRetryAfter(resp.Header.Get("Retry-After"))
 			lastErr = &APIError{Status: resp.StatusCode, Message: http.StatusText(resp.StatusCode),
 				BambooHRMessage: resp.Header.Get("X-BambooHR-Error-Message")}
@@ -99,6 +130,14 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 			continue
 		}
 
+		// A 5xx on an add (500, 502, 503, 504) does not say whether the row
+		// was saved before the failure, so the caller must re-read.
+		if resp.StatusCode >= 500 && nonIdempotent {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			return fmt.Errorf("%w: %w", ErrWriteOutcomeUnknown, &APIError{Status: resp.StatusCode,
+				Message: http.StatusText(resp.StatusCode), BambooHRMessage: resp.Header.Get("X-BambooHR-Error-Message")})
+		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			resp.Body.Close()
 			return &APIError{Status: resp.StatusCode, Message: http.StatusText(resp.StatusCode),

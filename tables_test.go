@@ -2,9 +2,14 @@ package bamboohr
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // Payloads below mirror the real endpoint SHAPES (numeric id/employeeId, blank and
@@ -121,5 +126,204 @@ func TestTableRowsByEmployeeDropsUnattributedRows(t *testing.T) {
 	got := TableRowsByEmployee([]TableRow{{ID: "1"}, {ID: "2", EmployeeID: "7"}})
 	if len(got) != 1 || len(got["7"]) != 1 {
 		t.Fatalf("grouped = %v", got)
+	}
+}
+
+// TestAddTableRow checks the v1_1 path, the JSON body, and that an empty 200
+// response is success.
+func TestAddTableRow(t *testing.T) {
+	var gotPath, gotMethod string
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotMethod = r.URL.Path, r.Method
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	c := testClient(t, srv)
+	if err := c.AddTableRow(context.Background(), "7", "customTableAlias", Record{"description": "X1"}); err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/api/v1_1/employees/7/tables/customTableAlias" || gotBody["description"] != "X1" {
+		t.Errorf("got %s %s %v", gotMethod, gotPath, gotBody)
+	}
+}
+
+// TestAddTableRowRetryPolicy: an add is retried on 429 but not on 503, where
+// the row may already have been written.
+func TestAddTableRowRetryPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		calls  int
+	}{{http.StatusTooManyRequests, 2}, {http.StatusServiceUnavailable, 1}} {
+		var calls atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			if calls.Load() == 1 {
+				w.WriteHeader(tc.status)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		c := testClient(t, srv)
+		err := c.AddTableRow(context.Background(), "7", "t", Record{"a": "b"})
+		srv.Close()
+		if int(calls.Load()) != tc.calls {
+			t.Errorf("status %d: %d calls, want %d (err %v)", tc.status, calls.Load(), tc.calls, err)
+		}
+	}
+}
+
+// TestUpdateTableRow checks the row path and that an update retries on 503.
+func TestUpdateTableRow(t *testing.T) {
+	var calls atomic.Int32
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		gotPath = r.URL.Path
+		if calls.Load() == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	c := testClient(t, srv)
+	if err := c.UpdateTableRow(context.Background(), "7", "t", "55", Record{"dateReturned": "2026-10-02"}); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 2 || gotPath != "/api/v1_1/employees/7/tables/t/55" {
+		t.Errorf("calls %d path %s", calls.Load(), gotPath)
+	}
+	if err := c.UpdateTableRow(context.Background(), "7", "t", "", nil); err == nil {
+		t.Error("empty rowID accepted")
+	}
+	if err := c.AddTableRow(context.Background(), "all", "t", nil); err == nil {
+		t.Error("employee 'all' accepted for a write")
+	}
+}
+
+// TestAddTableRowConnectionDropped: a connection closed after the request was
+// sent is not retried and reports an unknown outcome.
+func TestAddTableRowConnectionDropped(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			conn.Close()
+		}
+	}))
+	defer srv.Close()
+	c := testClient(t, srv)
+	err := c.AddTableRow(context.Background(), "7", "t", Record{"a": "b"})
+	if calls.Load() != 1 || !errors.Is(err, ErrWriteOutcomeUnknown) {
+		t.Errorf("calls %d err %v; want 1 call and ErrWriteOutcomeUnknown", calls.Load(), err)
+	}
+}
+
+// TestAddTableRow5xxIsUnknown: a 5xx on an add is not retried and is marked
+// as an unknown outcome, while a 4xx stays an ordinary error.
+func TestAddTableRow5xxIsUnknown(t *testing.T) {
+	for _, status := range []int{500, 502, 503, 504, 400} {
+		var calls atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			w.WriteHeader(status)
+		}))
+		c := testClient(t, srv)
+		err := c.AddTableRow(context.Background(), "7", "t", Record{"a": "b"})
+		srv.Close()
+		if want := status >= 500; errors.Is(err, ErrWriteOutcomeUnknown) != want || calls.Load() != 1 {
+			t.Errorf("status %d: calls %d err %v; want 1 call, unknown=%v", status, calls.Load(), err, want)
+		}
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.Status != status {
+			t.Errorf("status %d: err %v does not carry the APIError", status, err)
+		}
+	}
+}
+
+// TestWriteValidation covers the guards that keep junk out of tables.
+func TestWriteValidation(t *testing.T) {
+	c := testClient(t, httptest.NewServer(http.NotFoundHandler()))
+	ctx := context.Background()
+	for name, err := range map[string]error{
+		"empty add":    c.AddTableRow(ctx, "7", "t", Record{}),
+		"nil update":   c.UpdateTableRow(ctx, "7", "t", "5", nil),
+		"ALL employee": c.AddTableRow(ctx, "ALL", "t", Record{"a": "b"}),
+		"dot row":      c.UpdateTableRow(ctx, "7", "t", "..", Record{"a": "b"}),
+	} {
+		if err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+}
+
+// TestDateMarshalsAsString: a Date written back into a row is "YYYY-MM-DD".
+func TestDateMarshalsAsString(t *testing.T) {
+	b, err := json.Marshal(Record{"d": Date{Year: 2026, Month: 10, Day: 2}})
+	if err != nil || string(b) != `{"d":"2026-10-02"}` {
+		t.Errorf("got %s %v", b, err)
+	}
+}
+
+// TestDateJSONRoundTrip: zero dates read and write as blank, and a date
+// round-trips.
+func TestDateJSONRoundTrip(t *testing.T) {
+	b, _ := json.Marshal(Record{"d": Date{}})
+	if string(b) != `{"d":""}` {
+		t.Errorf("zero date = %s", b)
+	}
+	var v struct{ D, Z, N Date }
+	if err := json.Unmarshal([]byte(`{"D":"2026-10-02","Z":"0000-00-00","N":null}`), &v); err != nil {
+		t.Fatal(err)
+	}
+	if v.D != (Date{Year: 2026, Month: 10, Day: 2}) || v.Z != (Date{}) || v.N != (Date{}) {
+		t.Errorf("got %+v", v)
+	}
+}
+
+// TestWriteDoesNotFollowRedirect: a redirected write is an error, and the
+// redirect target is never called.
+func TestWriteDoesNotFollowRedirect(t *testing.T) {
+	var followed atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		followed.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	defer srv.Close()
+	c := testClient(t, srv)
+	if err := c.UpdateTableRow(context.Background(), "7", "t", "5", Record{"a": "b"}); err == nil {
+		t.Error("redirected update reported success")
+	}
+	if followed.Load() != 0 {
+		t.Errorf("redirect followed %d times", followed.Load())
+	}
+}
+
+type dialErrorRT struct{ calls atomic.Int32 }
+
+func (d *dialErrorRT) RoundTrip(*http.Request) (*http.Response, error) {
+	d.calls.Add(1)
+	return nil, &net.OpError{Op: "dial", Err: errors.New("refused")}
+}
+
+// TestAddTransportErrorNeverRetried: even a dial-looking error is an unknown
+// outcome for an add, since a RoundTripper can send and then fail.
+func TestAddTransportErrorNeverRetried(t *testing.T) {
+	rt := &dialErrorRT{}
+	c, err := New(Config{APIKey: "k", Subdomain: "acme", HTTPClient: &http.Client{Transport: rt}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.baseDelay = time.Millisecond
+	err = c.AddTableRow(context.Background(), "7", "t", Record{"a": "b"})
+	if rt.calls.Load() != 1 || !errors.Is(err, ErrWriteOutcomeUnknown) {
+		t.Errorf("calls %d err %v", rt.calls.Load(), err)
 	}
 }
