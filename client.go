@@ -47,6 +47,14 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, out any
 // do performs an authenticated JSON request with retry/backoff on 429/503 and
 // decodes a 2xx JSON body into out (if non-nil). Non-2xx → *APIError.
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
+	return c.doWith(ctx, method, path, body, out, false)
+}
+
+// doWith is do with a retry policy. A non-idempotent request (nonIdempotent)
+// is retried only on 429, where BambooHR states it rejected the request. A
+// network error or 503 may come after the server already applied it, so a
+// retry could repeat the write (a duplicate table row); those return at once.
+func (c *Client) doWith(ctx context.Context, method, path string, body, out any, nonIdempotent bool) error {
 	var bodyBytes []byte
 	if body != nil {
 		var err error
@@ -82,15 +90,18 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 		if err != nil {
 			// Transient network failures (reset, timeout, DNS blip) are retryable;
 			// a cancelled context is caught by wait() at the top of the next attempt.
-			// NOTE: this (like the 429/503 retry below) assumes idempotent requests —
-			// gate by method before adding non-idempotent writes (tables.go POST).
 			lastErr = fmt.Errorf("bamboohr: %s %s: %w", method, path, err)
+			if nonIdempotent {
+				return lastErr
+			}
 			delayHint = 0
 			continue
 		}
 
-		// 429 (too fast) and 503 (gateway overwhelmed) are both retryable.
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
+		// 429 (too fast) is always retryable. 503 (gateway overwhelmed) is
+		// retryable only for idempotent requests.
+		if resp.StatusCode == http.StatusTooManyRequests ||
+			(resp.StatusCode == http.StatusServiceUnavailable && !nonIdempotent) {
 			delayHint = parseRetryAfter(resp.Header.Get("Retry-After"))
 			lastErr = &APIError{Status: resp.StatusCode, Message: http.StatusText(resp.StatusCode),
 				BambooHRMessage: resp.Header.Get("X-BambooHR-Error-Message")}

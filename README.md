@@ -55,7 +55,16 @@ accessors as a dataset record:
         if d, ok := r.Fields.Date("customDateField"); ok { /* ... */ }
     }
 
-Table writes are not implemented — see the reserved API in `tables.go`.
+Writes use the v1_1 endpoints (the v1 ones were deprecated on 2026-07-08):
+
+    // Add a row. BambooHR returns no body, so re-read the table to find its id.
+    err := c.AddTableRow(ctx, "42", "customTableAlias", bamboohr.Record{"customFieldA": "x"})
+
+    // Change some fields of one row in place.
+    err = c.UpdateTableRow(ctx, "42", "customTableAlias", rowID, bamboohr.Record{"customDateField": "2026-10-02"})
+
+An add is not idempotent, so it is retried only on 429, never after a network
+error or 503 (the row may already exist). Updates retry like reads.
 
 ### Dates
 

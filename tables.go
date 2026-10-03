@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 )
@@ -88,16 +89,45 @@ func jsonScalarString(raw json.RawMessage) string {
 	return s
 }
 
-// Future WRITE surface (NOT implemented) — reserved here so the shape is agreed and
-// discoverable. The transport (auth, retry, errors) is already write-ready; only these
-// endpoints + their tests are deferred to the Assets phase.
-//
-// Planned API:
-//
-//	func (c *Client) AddTableRow(ctx context.Context, employeeID, table string, row Record) (rowID string, err error)
-//	func (c *Client) UpdateTableRow(ctx context.Context, employeeID, table, rowID string, row Record) error
-//
-// against POST /api/v1/employees/{id}/tables/{table} (create) and
-// POST /api/v1/employees/{id}/tables/{table}/{rowId} (update). The "Assets"
-// employee table is the first intended consumer (recording assigned IT assets
-// per employee).
+// AddTableRow adds a row to one employee table, via
+// POST /api/v1_1/employees/{id}/tables/{table}. BambooHR returns no body, so the
+// new row's id is not known; re-read the table to find it. This is not
+// idempotent: it is retried only on 429, never after a network error or 503,
+// where the row may already exist.
+func (c *Client) AddTableRow(ctx context.Context, employeeID, table string, row Record) error {
+	path, err := tablePath(employeeID, table, "")
+	if err != nil {
+		return err
+	}
+	return c.doWith(ctx, http.MethodPost, path, map[string]any(row), nil, true)
+}
+
+// UpdateTableRow changes the given fields of one existing row in place, via
+// POST /api/v1_1/employees/{id}/tables/{table}/{rowId}. Fields not in row keep
+// their values. Repeating it is harmless, so it retries like a read.
+func (c *Client) UpdateTableRow(ctx context.Context, employeeID, table, rowID string, row Record) error {
+	if rowID == "" {
+		return fmt.Errorf("bamboohr: rowID is required")
+	}
+	path, err := tablePath(employeeID, table, rowID)
+	if err != nil {
+		return err
+	}
+	return c.do(ctx, http.MethodPost, path, map[string]any(row), nil)
+}
+
+// tablePath builds a v1_1 table write path. The v1 write endpoints were
+// deprecated on 2026-07-08 in favor of these.
+func tablePath(employeeID, table, rowID string) (string, error) {
+	if employeeID == "" || employeeID == "all" {
+		return "", fmt.Errorf("bamboohr: a single employeeID is required")
+	}
+	if table == "" {
+		return "", fmt.Errorf("bamboohr: table is required")
+	}
+	p := "api/v1_1/employees/" + url.PathEscape(employeeID) + "/tables/" + url.PathEscape(table)
+	if rowID != "" {
+		p += "/" + url.PathEscape(rowID)
+	}
+	return p, nil
+}

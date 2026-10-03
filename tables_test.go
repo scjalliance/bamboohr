@@ -2,6 +2,7 @@ package bamboohr
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -121,5 +122,79 @@ func TestTableRowsByEmployeeDropsUnattributedRows(t *testing.T) {
 	got := TableRowsByEmployee([]TableRow{{ID: "1"}, {ID: "2", EmployeeID: "7"}})
 	if len(got) != 1 || len(got["7"]) != 1 {
 		t.Fatalf("grouped = %v", got)
+	}
+}
+
+// TestAddTableRow checks the v1_1 path, the JSON body, and that an empty 200
+// response is success.
+func TestAddTableRow(t *testing.T) {
+	var gotPath, gotMethod string
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotMethod = r.URL.Path, r.Method
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	c := testClient(t, srv)
+	if err := c.AddTableRow(context.Background(), "7", "customTableAlias", Record{"description": "X1"}); err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/api/v1_1/employees/7/tables/customTableAlias" || gotBody["description"] != "X1" {
+		t.Errorf("got %s %s %v", gotMethod, gotPath, gotBody)
+	}
+}
+
+// TestAddTableRowRetryPolicy: an add is retried on 429 but not on 503, where
+// the row may already have been written.
+func TestAddTableRowRetryPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		calls  int
+	}{{http.StatusTooManyRequests, 2}, {http.StatusServiceUnavailable, 1}} {
+		calls := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			if calls == 1 {
+				w.WriteHeader(tc.status)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		c := testClient(t, srv)
+		err := c.AddTableRow(context.Background(), "7", "t", Record{"a": "b"})
+		srv.Close()
+		if calls != tc.calls {
+			t.Errorf("status %d: %d calls, want %d (err %v)", tc.status, calls, tc.calls, err)
+		}
+	}
+}
+
+// TestUpdateTableRow checks the row path and that an update retries on 503.
+func TestUpdateTableRow(t *testing.T) {
+	calls := 0
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		gotPath = r.URL.Path
+		if calls == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	c := testClient(t, srv)
+	if err := c.UpdateTableRow(context.Background(), "7", "t", "55", Record{"dateReturned": "2026-10-02"}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || gotPath != "/api/v1_1/employees/7/tables/t/55" {
+		t.Errorf("calls %d path %s", calls, gotPath)
+	}
+	if err := c.UpdateTableRow(context.Background(), "7", "t", "", nil); err == nil {
+		t.Error("empty rowID accepted")
+	}
+	if err := c.AddTableRow(context.Background(), "all", "t", nil); err == nil {
+		t.Error("employee 'all' accepted for a write")
 	}
 }
