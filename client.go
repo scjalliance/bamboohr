@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -58,39 +57,12 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 // duplicate the row. Other errors mean the write was not applied.
 var ErrWriteOutcomeUnknown = errors.New("bamboohr: write outcome unknown")
 
-// stdTransport reports whether the client uses Go's own *http.Transport (or
-// the default), whose dial and DNS errors really mean nothing was sent. A
-// caller-supplied RoundTripper could return such an error after sending, so
-// its errors are never taken as proof.
-func stdTransport(c *http.Client) bool {
-	t := c.Transport
-	if t == nil {
-		// nil means http.DefaultTransport, which a process may have replaced
-		// with a wrapper; check what it actually is.
-		t = http.DefaultTransport
-	}
-	_, ok := t.(*http.Transport)
-	return ok
-}
-
-// notSent reports a transport error that happened before the request reached
-// the server (dial or DNS failure), so retrying a write is safe. Only trusted
-// with Go's own transport (stdTransport).
-func notSent(err error) bool {
-	var dns *net.DNSError
-	if errors.As(err, &dns) {
-		return true
-	}
-	var op *net.OpError
-	return errors.As(err, &op) && op.Op == "dial"
-}
-
 // doWith is do with a retry policy. A non-idempotent request (nonIdempotent)
-// is retried only on 429, where BambooHR states it rejected the request, and
-// on dial or DNS failures, where it never reached the server. Any other
-// network error, or a 503, may come after the server applied it, so a retry
-// could repeat the write (a duplicate table row); those return at once,
-// wrapping ErrWriteOutcomeUnknown.
+// is retried only on 429, where BambooHR states it rejected the request. Any
+// transport error or a 503 may come after the server applied it (and no
+// transport error proves otherwise, since a RoundTripper can send and then
+// fail), so it returns at once wrapping ErrWriteOutcomeUnknown; the caller
+// re-reads before trying again.
 func (c *Client) doWith(ctx context.Context, method, path string, body, out any, nonIdempotent bool) error {
 	var bodyBytes []byte
 	if body != nil {
@@ -139,7 +111,7 @@ func (c *Client) doWith(ctx context.Context, method, path string, body, out any,
 			// Transient network failures (reset, timeout, DNS blip) are retryable;
 			// a cancelled context is caught by wait() at the top of the next attempt.
 			lastErr = fmt.Errorf("bamboohr: %s %s: %w", method, path, err)
-			if nonIdempotent && !(stdTransport(httpClient) && notSent(err)) {
+			if nonIdempotent {
 				return fmt.Errorf("%w: %w", ErrWriteOutcomeUnknown, lastErr)
 			}
 			delayHint = 0

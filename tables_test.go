@@ -304,9 +304,9 @@ func (d *dialErrorRT) RoundTrip(*http.Request) (*http.Response, error) {
 	return nil, &net.OpError{Op: "dial", Err: errors.New("refused")}
 }
 
-// TestCustomTransportDialErrorNotTrusted: a custom RoundTripper's dial-looking
-// error is an unknown outcome, not a safe retry.
-func TestCustomTransportDialErrorNotTrusted(t *testing.T) {
+// TestAddTransportErrorNeverRetried: even a dial-looking error is an unknown
+// outcome for an add, since a RoundTripper can send and then fail.
+func TestAddTransportErrorNeverRetried(t *testing.T) {
 	rt := &dialErrorRT{}
 	c, err := New(Config{APIKey: "k", Subdomain: "acme", HTTPClient: &http.Client{Transport: rt}})
 	if err != nil {

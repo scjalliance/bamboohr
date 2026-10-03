@@ -74,9 +74,9 @@ Writes use the v1_1 endpoints (the v1 ones were deprecated on 2026-07-08):
     err = c.UpdateTableRow(ctx, "42", "customTableAlias", rowID,
         bamboohr.Record{"customDateField": bamboohr.Date{Year: 2026, Month: 10, Day: 2}})
 
-An add is not idempotent, so it is retried only on 429 and on failures before
-the request was sent. A network error after sending, or a 503, returns an
-error wrapping `ErrWriteOutcomeUnknown`. Updates retry like reads.
+An add is not idempotent, so it is retried only on 429. Any transport error or
+503 returns an error wrapping `ErrWriteOutcomeUnknown`: re-read the table
+before adding again. Updates retry like reads.
 
 ### Dates
 

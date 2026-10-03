@@ -90,9 +90,9 @@ func jsonScalarString(raw json.RawMessage) string {
 // AddTableRow adds a row to one employee table, via
 // POST /api/v1_1/employees/{id}/tables/{table}. BambooHR returns no body, so the
 // new row's id is not known; re-read the table (EmployeeTable) and find the row
-// by its content. This is not idempotent: it is retried only on 429 and on
-// failures before the request was sent. A failure that may have been applied
-// (a network error after sending, or a 503) wraps ErrWriteOutcomeUnknown.
+// by its content. This is not idempotent: it is retried only on 429. Any
+// transport error or 503 may have been applied and wraps
+// ErrWriteOutcomeUnknown.
 func (c *Client) AddTableRow(ctx context.Context, employeeID, table string, row Record) error {
 	if len(row) == 0 {
 		return fmt.Errorf("bamboohr: row has no fields")
