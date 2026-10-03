@@ -57,26 +57,29 @@ accessors as a dataset record:
 
 Writes use the v1_1 endpoints (the v1 ones were deprecated on 2026-07-08):
 
-    // Add a row. BambooHR returns no body, so re-read the table to find its id.
+    // Add a row. BambooHR returns no body, so snapshot the row ids first and
+    // find the new row as the id that was not there before.
+    before, _ := c.EmployeeTable(ctx, "42", "customTableAlias")
     err := c.AddTableRow(ctx, "42", "customTableAlias", bamboohr.Record{"customFieldA": "x"})
     if errors.Is(err, bamboohr.ErrWriteOutcomeUnknown) {
-        // The row may exist. Re-read before adding again.
+        // The row may or may not exist. Do not add again until a re-read
+        // settles it.
     }
-    rows, _ := c.EmployeeTable(ctx, "42", "customTableAlias")
-    var rowID string
-    for _, r := range rows {
-        if r.Fields.String("customFieldA") == "x" {
-            rowID = r.ID
-        }
-    }
+    after, _ := c.EmployeeTable(ctx, "42", "customTableAlias")
+    // rowID = the one id in after that is not in before. Zero or several new
+    // ids (another writer, or an unknown outcome) leave it unresolved.
 
     // Change some fields of one row in place. A Date marshals as "YYYY-MM-DD".
     err = c.UpdateTableRow(ctx, "42", "customTableAlias", rowID,
         bamboohr.Record{"customDateField": bamboohr.Date{Year: 2026, Month: 10, Day: 2}})
 
 An add is not idempotent, so it is retried only on 429. Any transport error or
-503 returns an error wrapping `ErrWriteOutcomeUnknown`: re-read the table
-before adding again. Updates retry like reads.
+5xx returns an error wrapping `ErrWriteOutcomeUnknown`. Re-read the table
+before adding again. A row whose fields match the add does not prove the add
+succeeded, since an identical row may already have existed. Compare row ids
+against a snapshot taken before the add, or a unique value written in the row,
+and leave the outcome unresolved if the re-read is still ambiguous. Updates
+retry like reads.
 
 ### Dates
 

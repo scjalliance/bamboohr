@@ -53,13 +53,13 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 
 // ErrWriteOutcomeUnknown wraps a failed non-idempotent write (a table-row add)
 // that may or may not have been applied: a network error after the request
-// was sent, or a 503. Re-read before trying again; retrying blindly can
+// was sent, or any 5xx. Re-read before trying again; retrying blindly can
 // duplicate the row. Other errors mean the write was not applied.
 var ErrWriteOutcomeUnknown = errors.New("bamboohr: write outcome unknown")
 
 // doWith is do with a retry policy. A non-idempotent request (nonIdempotent)
 // is retried only on 429, where BambooHR states it rejected the request. Any
-// transport error or a 503 may come after the server applied it (and no
+// transport error or 5xx may come after the server applied it (and no
 // transport error proves otherwise, since a RoundTripper can send and then
 // fail), so it returns at once wrapping ErrWriteOutcomeUnknown; the caller
 // re-reads before trying again.
@@ -130,7 +130,9 @@ func (c *Client) doWith(ctx context.Context, method, path string, body, out any,
 			continue
 		}
 
-		if resp.StatusCode == http.StatusServiceUnavailable && nonIdempotent {
+		// A 5xx on an add (500, 502, 503, 504) does not say whether the row
+		// was saved before the failure, so the caller must re-read.
+		if resp.StatusCode >= 500 && nonIdempotent {
 			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 			return fmt.Errorf("%w: %w", ErrWriteOutcomeUnknown, &APIError{Status: resp.StatusCode,

@@ -222,16 +222,25 @@ func TestAddTableRowConnectionDropped(t *testing.T) {
 	}
 }
 
-// TestAddTableRow503IsUnknown: a 503 on an add is not retried and is marked
-// as an unknown outcome.
-func TestAddTableRow503IsUnknown(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer srv.Close()
-	c := testClient(t, srv)
-	if err := c.AddTableRow(context.Background(), "7", "t", Record{"a": "b"}); !errors.Is(err, ErrWriteOutcomeUnknown) {
-		t.Errorf("err = %v, want ErrWriteOutcomeUnknown", err)
+// TestAddTableRow5xxIsUnknown: a 5xx on an add is not retried and is marked
+// as an unknown outcome, while a 4xx stays an ordinary error.
+func TestAddTableRow5xxIsUnknown(t *testing.T) {
+	for _, status := range []int{500, 502, 503, 504, 400} {
+		var calls atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			w.WriteHeader(status)
+		}))
+		c := testClient(t, srv)
+		err := c.AddTableRow(context.Background(), "7", "t", Record{"a": "b"})
+		srv.Close()
+		if want := status >= 500; errors.Is(err, ErrWriteOutcomeUnknown) != want || calls.Load() != 1 {
+			t.Errorf("status %d: calls %d err %v; want 1 call, unknown=%v", status, calls.Load(), err, want)
+		}
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.Status != status {
+			t.Errorf("status %d: err %v does not carry the APIError", status, err)
+		}
 	}
 }
 
