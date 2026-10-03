@@ -27,12 +27,10 @@ func (c *Client) AllEmployeeTables(ctx context.Context, table string) ([]TableRo
 }
 
 func (c *Client) tableRows(ctx context.Context, employeeID, table string) ([]TableRow, error) {
-	if table == "" {
-		return nil, fmt.Errorf("bamboohr: table is required")
+	path, err := tablePath("v1", employeeID, table, "")
+	if err != nil {
+		return nil, err
 	}
-	// Table aliases are tenant-defined and may need escaping (the live scjalliance
-	// tenant has aliases like "customAlias'WithQuote").
-	path := "api/v1/employees/" + url.PathEscape(employeeID) + "/tables/" + url.PathEscape(table)
 
 	var raw []map[string]json.RawMessage
 	if err := c.get(ctx, path, nil, &raw); err != nil {
@@ -91,15 +89,22 @@ func jsonScalarString(raw json.RawMessage) string {
 
 // AddTableRow adds a row to one employee table, via
 // POST /api/v1_1/employees/{id}/tables/{table}. BambooHR returns no body, so the
-// new row's id is not known; re-read the table to find it. This is not
-// idempotent: it is retried only on 429, never after a network error or 503,
-// where the row may already exist.
+// new row's id is not known; re-read the table (EmployeeTable) and find the row
+// by its content. This is not idempotent: it is retried only on 429 and on
+// failures before the request was sent. A failure that may have been applied
+// (a network error after sending, or a 503) wraps ErrWriteOutcomeUnknown.
 func (c *Client) AddTableRow(ctx context.Context, employeeID, table string, row Record) error {
-	path, err := tablePath(employeeID, table, "")
+	if len(row) == 0 {
+		return fmt.Errorf("bamboohr: row has no fields")
+	}
+	if err := singleEmployee(employeeID); err != nil {
+		return err
+	}
+	path, err := tablePath("v1_1", employeeID, table, "")
 	if err != nil {
 		return err
 	}
-	return c.doWith(ctx, http.MethodPost, path, map[string]any(row), nil, true)
+	return c.doWith(ctx, http.MethodPost, path, row, nil, true)
 }
 
 // UpdateTableRow changes the given fields of one existing row in place, via
@@ -109,23 +114,45 @@ func (c *Client) UpdateTableRow(ctx context.Context, employeeID, table, rowID st
 	if rowID == "" {
 		return fmt.Errorf("bamboohr: rowID is required")
 	}
-	path, err := tablePath(employeeID, table, rowID)
+	if len(row) == 0 {
+		return fmt.Errorf("bamboohr: row has no fields")
+	}
+	if err := singleEmployee(employeeID); err != nil {
+		return err
+	}
+	path, err := tablePath("v1_1", employeeID, table, rowID)
 	if err != nil {
 		return err
 	}
-	return c.do(ctx, http.MethodPost, path, map[string]any(row), nil)
+	return c.do(ctx, http.MethodPost, path, row, nil)
 }
 
-// tablePath builds a v1_1 table write path. The v1 write endpoints were
-// deprecated on 2026-07-08 in favor of these.
-func tablePath(employeeID, table, rowID string) (string, error) {
-	if employeeID == "" || employeeID == "all" {
-		return "", fmt.Errorf("bamboohr: a single employeeID is required")
+// singleEmployee rejects the bulk pseudo-id "all" for writes.
+func singleEmployee(employeeID string) error {
+	if strings.EqualFold(strings.TrimSpace(employeeID), "all") {
+		return fmt.Errorf("bamboohr: a single employeeID is required")
+	}
+	return nil
+}
+
+// tablePath builds an employee-table path for an API version ("v1" for reads,
+// "v1_1" for writes; the v1 writes were deprecated on 2026-07-08). Table
+// aliases are tenant-defined and may need escaping. "." and ".." are refused
+// as path segments: a proxy that normalizes them could turn an update URL
+// into the add URL.
+func tablePath(version, employeeID, table, rowID string) (string, error) {
+	if employeeID == "" {
+		return "", fmt.Errorf("bamboohr: employeeID is required")
 	}
 	if table == "" {
 		return "", fmt.Errorf("bamboohr: table is required")
 	}
-	p := "api/v1_1/employees/" + url.PathEscape(employeeID) + "/tables/" + url.PathEscape(table)
+	for _, seg := range []string{employeeID, table, rowID} {
+		if seg == "." || seg == ".." {
+			return "", fmt.Errorf("bamboohr: invalid path segment %q", seg)
+		}
+	}
+	p := "api/" + version + "/employees/" + url.PathEscape(employeeID) + "/tables/" + url.PathEscape(table)
 	if rowID != "" {
 		p += "/" + url.PathEscape(rowID)
 	}

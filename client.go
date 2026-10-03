@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -50,6 +52,23 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	return c.doWith(ctx, method, path, body, out, false)
 }
 
+// ErrWriteOutcomeUnknown wraps a failed non-idempotent write (a table-row add)
+// that may or may not have been applied: a network error after the request
+// was sent, or a 503. Re-read before trying again; retrying blindly can
+// duplicate the row. Other errors mean the write was not applied.
+var ErrWriteOutcomeUnknown = errors.New("bamboohr: write outcome unknown")
+
+// notSent reports a transport error that happened before the request reached
+// the server (dial or DNS failure), so retrying a write is safe.
+func notSent(err error) bool {
+	var dns *net.DNSError
+	if errors.As(err, &dns) {
+		return true
+	}
+	var op *net.OpError
+	return errors.As(err, &op) && op.Op == "dial"
+}
+
 // doWith is do with a retry policy. A non-idempotent request (nonIdempotent)
 // is retried only on 429, where BambooHR states it rejected the request. A
 // network error or 503 may come after the server already applied it, so a
@@ -91,8 +110,8 @@ func (c *Client) doWith(ctx context.Context, method, path string, body, out any,
 			// Transient network failures (reset, timeout, DNS blip) are retryable;
 			// a cancelled context is caught by wait() at the top of the next attempt.
 			lastErr = fmt.Errorf("bamboohr: %s %s: %w", method, path, err)
-			if nonIdempotent {
-				return lastErr
+			if nonIdempotent && !notSent(err) {
+				return fmt.Errorf("%w: %w", ErrWriteOutcomeUnknown, lastErr)
 			}
 			delayHint = 0
 			continue
@@ -110,6 +129,12 @@ func (c *Client) doWith(ctx context.Context, method, path string, body, out any,
 			continue
 		}
 
+		if resp.StatusCode == http.StatusServiceUnavailable && nonIdempotent {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+			return fmt.Errorf("%w: %w", ErrWriteOutcomeUnknown, &APIError{Status: resp.StatusCode,
+				Message: http.StatusText(resp.StatusCode), BambooHRMessage: resp.Header.Get("X-BambooHR-Error-Message")})
+		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			resp.Body.Close()
 			return &APIError{Status: resp.StatusCode, Message: http.StatusText(resp.StatusCode),

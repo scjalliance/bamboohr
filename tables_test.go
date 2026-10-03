@@ -3,8 +3,10 @@ package bamboohr
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 )
 
@@ -152,10 +154,10 @@ func TestAddTableRowRetryPolicy(t *testing.T) {
 		status int
 		calls  int
 	}{{http.StatusTooManyRequests, 2}, {http.StatusServiceUnavailable, 1}} {
-		calls := 0
+		var calls atomic.Int32
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			calls++
-			if calls == 1 {
+			calls.Add(1)
+			if calls.Load() == 1 {
 				w.WriteHeader(tc.status)
 				return
 			}
@@ -164,20 +166,20 @@ func TestAddTableRowRetryPolicy(t *testing.T) {
 		c := testClient(t, srv)
 		err := c.AddTableRow(context.Background(), "7", "t", Record{"a": "b"})
 		srv.Close()
-		if calls != tc.calls {
-			t.Errorf("status %d: %d calls, want %d (err %v)", tc.status, calls, tc.calls, err)
+		if int(calls.Load()) != tc.calls {
+			t.Errorf("status %d: %d calls, want %d (err %v)", tc.status, calls.Load(), tc.calls, err)
 		}
 	}
 }
 
 // TestUpdateTableRow checks the row path and that an update retries on 503.
 func TestUpdateTableRow(t *testing.T) {
-	calls := 0
+	var calls atomic.Int32
 	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
+		calls.Add(1)
 		gotPath = r.URL.Path
-		if calls == 1 {
+		if calls.Load() == 1 {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
@@ -188,13 +190,69 @@ func TestUpdateTableRow(t *testing.T) {
 	if err := c.UpdateTableRow(context.Background(), "7", "t", "55", Record{"dateReturned": "2026-10-02"}); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 2 || gotPath != "/api/v1_1/employees/7/tables/t/55" {
-		t.Errorf("calls %d path %s", calls, gotPath)
+	if calls.Load() != 2 || gotPath != "/api/v1_1/employees/7/tables/t/55" {
+		t.Errorf("calls %d path %s", calls.Load(), gotPath)
 	}
 	if err := c.UpdateTableRow(context.Background(), "7", "t", "", nil); err == nil {
 		t.Error("empty rowID accepted")
 	}
 	if err := c.AddTableRow(context.Background(), "all", "t", nil); err == nil {
 		t.Error("employee 'all' accepted for a write")
+	}
+}
+
+// TestAddTableRowConnectionDropped: a connection closed after the request was
+// sent is not retried and reports an unknown outcome.
+func TestAddTableRowConnectionDropped(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			conn.Close()
+		}
+	}))
+	defer srv.Close()
+	c := testClient(t, srv)
+	err := c.AddTableRow(context.Background(), "7", "t", Record{"a": "b"})
+	if calls.Load() != 1 || !errors.Is(err, ErrWriteOutcomeUnknown) {
+		t.Errorf("calls %d err %v; want 1 call and ErrWriteOutcomeUnknown", calls.Load(), err)
+	}
+}
+
+// TestAddTableRow503IsUnknown: a 503 on an add is not retried and is marked
+// as an unknown outcome.
+func TestAddTableRow503IsUnknown(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	c := testClient(t, srv)
+	if err := c.AddTableRow(context.Background(), "7", "t", Record{"a": "b"}); !errors.Is(err, ErrWriteOutcomeUnknown) {
+		t.Errorf("err = %v, want ErrWriteOutcomeUnknown", err)
+	}
+}
+
+// TestWriteValidation covers the guards that keep junk out of tables.
+func TestWriteValidation(t *testing.T) {
+	c := testClient(t, httptest.NewServer(http.NotFoundHandler()))
+	ctx := context.Background()
+	for name, err := range map[string]error{
+		"empty add":    c.AddTableRow(ctx, "7", "t", Record{}),
+		"nil update":   c.UpdateTableRow(ctx, "7", "t", "5", nil),
+		"ALL employee": c.AddTableRow(ctx, "ALL", "t", Record{"a": "b"}),
+		"dot row":      c.UpdateTableRow(ctx, "7", "t", "..", Record{"a": "b"}),
+	} {
+		if err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+}
+
+// TestDateMarshalsAsString: a Date written back into a row is "YYYY-MM-DD".
+func TestDateMarshalsAsString(t *testing.T) {
+	b, err := json.Marshal(Record{"d": Date{Year: 2026, Month: 10, Day: 2}})
+	if err != nil || string(b) != `{"d":"2026-10-02"}` {
+		t.Errorf("got %s %v", b, err)
 	}
 }

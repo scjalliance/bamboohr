@@ -59,12 +59,24 @@ Writes use the v1_1 endpoints (the v1 ones were deprecated on 2026-07-08):
 
     // Add a row. BambooHR returns no body, so re-read the table to find its id.
     err := c.AddTableRow(ctx, "42", "customTableAlias", bamboohr.Record{"customFieldA": "x"})
+    if errors.Is(err, bamboohr.ErrWriteOutcomeUnknown) {
+        // The row may exist. Re-read before adding again.
+    }
+    rows, _ := c.EmployeeTable(ctx, "42", "customTableAlias")
+    var rowID string
+    for _, r := range rows {
+        if r.Fields.String("customFieldA") == "x" {
+            rowID = r.ID
+        }
+    }
 
-    // Change some fields of one row in place.
-    err = c.UpdateTableRow(ctx, "42", "customTableAlias", rowID, bamboohr.Record{"customDateField": "2026-10-02"})
+    // Change some fields of one row in place. A Date marshals as "YYYY-MM-DD".
+    err = c.UpdateTableRow(ctx, "42", "customTableAlias", rowID,
+        bamboohr.Record{"customDateField": bamboohr.Date{Year: 2026, Month: 10, Day: 2}})
 
-An add is not idempotent, so it is retried only on 429, never after a network
-error or 503 (the row may already exist). Updates retry like reads.
+An add is not idempotent, so it is retried only on 429 and on failures before
+the request was sent. A network error after sending, or a 503, returns an
+error wrapping `ErrWriteOutcomeUnknown`. Updates retry like reads.
 
 ### Dates
 

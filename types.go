@@ -76,6 +76,12 @@ func (d Date) String() string {
 	return fmt.Sprintf("%04d-%02d-%02d", d.Year, int(d.Month), d.Day)
 }
 
+// MarshalJSON writes the date as "YYYY-MM-DD", the form BambooHR expects, so a
+// Date read from a row can be written back unchanged.
+func (d Date) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + d.String() + `"`), nil
+}
+
 // ParseDate parses a bare "YYYY-MM-DD". It rejects empty strings and anything with
 // a time component (so timestamps don't masquerade as dates).
 func ParseDate(s string) (Date, bool) {

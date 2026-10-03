@@ -139,20 +139,21 @@ func (c *Client) Tables(ctx context.Context) ([]Table, error)   // employee tabl
 The caller names fields explicitly (`Dataset("employee").Fields("customTableNNNN","jobTitle")`);
 the client never interprets field names.
 
-## Write path (future — reserved, not built in v1)
+## Write path (built 2026-10-02)
 
-`tables.go` reserves the shape for per-employee table writes (the Assets use case):
+Table writes use the v1_1 endpoints; BambooHR deprecated the v1 ones on
+2026-07-08.
 
 ```go
-// FUTURE — not implemented in v1:
-// func (c *Client) EmployeeTable(employeeID, table string) *TableRef
-// func (t *TableRef) AddRow(ctx, Record) (rowID string, err error)
-// func (t *TableRef) UpdateRow(ctx, rowID string, Record) error
-// against /employees/{id}/tables/{table}
+func (c *Client) AddTableRow(ctx context.Context, employeeID, table string, row Record) error
+func (c *Client) UpdateTableRow(ctx context.Context, employeeID, table, rowID string, row Record) error
 ```
 
-Transport, auth, error, and retry machinery are write-ready; only the table
-endpoints + tests are deferred.
+The create returns an empty 200, so `AddTableRow` cannot return the new row id;
+callers re-read the table and find the row by its content. An add is not
+idempotent: it retries only on 429 and on failures before the request was sent,
+and a failure that may have been applied wraps `ErrWriteOutcomeUnknown`.
+`Date` marshals as "YYYY-MM-DD".
 
 ## Testing
 
