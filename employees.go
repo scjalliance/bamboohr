@@ -85,7 +85,10 @@ func (c *Client) ChangedTableSince(ctx context.Context, table string, since time
 	var employees map[string]struct {
 		LastChanged string `json:"lastChanged"`
 	}
-	if raw := bytes.TrimSpace(resp.Employees); len(raw) > 0 && raw[0] == '{' {
+	switch raw := bytes.TrimSpace(resp.Employees); string(raw) {
+	case "", "null", "[]":
+		// Nothing changed in the window.
+	default:
 		if err := json.Unmarshal(raw, &employees); err != nil {
 			return nil, fmt.Errorf("bamboohr: decode changed table employees: %w", err)
 		}

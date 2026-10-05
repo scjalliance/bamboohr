@@ -180,4 +180,12 @@ func TestChangedTableSinceEmpty(t *testing.T) {
 			t.Errorf("%s: got %v, %v; want empty, nil", body, got, err)
 		}
 	}
+	// Any other shape is an error, never a silent "no changes".
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"employees":[{"id":"7"}]}`))
+	}))
+	defer srv.Close()
+	if _, err := testClient(t, srv).ChangedTableSince(context.Background(), "jobInfo", time.Now()); err == nil {
+		t.Error("unexpected shape decoded as no changes")
+	}
 }
