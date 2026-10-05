@@ -81,6 +81,19 @@ func main() {
 		}
 		out, err := c.ChangedSince(ctx, ts)
 		emit(out, err)
+	case "changed-table":
+		if len(os.Args) < 3 {
+			fatal(fmt.Errorf("usage: bamboohr changed-table <table> --since=<RFC3339>"))
+		}
+		fs := flag.NewFlagSet("changed-table", flag.ExitOnError)
+		since := fs.String("since", "", "RFC3339 timestamp")
+		fs.Parse(os.Args[3:])
+		ts, perr := time.Parse(time.RFC3339, *since)
+		if perr != nil {
+			fatal(fmt.Errorf("--since must be RFC3339: %w", perr))
+		}
+		out, err := c.ChangedTableSince(ctx, os.Args[2], ts)
+		emit(out, err)
 	case "dataset":
 		if len(os.Args) < 3 {
 			fatal(fmt.Errorf("usage: bamboohr dataset <name> --fields=..."))

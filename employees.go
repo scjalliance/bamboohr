@@ -2,7 +2,9 @@ package bamboohr
 
 import (
 	"context"
+	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -56,5 +58,36 @@ func (c *Client) ChangedSince(ctx context.Context, since time.Time, changeType .
 		}
 		out = append(out, ce)
 	}
+	return out, nil
+}
+
+// ChangedTableSince returns employees whose rows in one employee table changed
+// at/after since, via GET /api/v1/employees/changed/tables/{table}. Edits to a
+// table (employment status, job information, a custom table) are reported
+// here, not necessarily by ChangedSince. Action is always "Updated"; the rows
+// the endpoint also returns are not decoded.
+func (c *Client) ChangedTableSince(ctx context.Context, table string, since time.Time) ([]ChangedEmployee, error) {
+	if table == "" {
+		return nil, fmt.Errorf("bamboohr: table is required")
+	}
+	q := url.Values{}
+	q.Set("since", since.Format(time.RFC3339))
+	var resp struct {
+		Employees map[string]struct {
+			LastChanged string `json:"lastChanged"`
+		} `json:"employees"`
+	}
+	if err := c.get(ctx, "api/v1/employees/changed/tables/"+url.PathEscape(table), q, &resp); err != nil {
+		return nil, err
+	}
+	out := make([]ChangedEmployee, 0, len(resp.Employees))
+	for id, e := range resp.Employees {
+		ce := ChangedEmployee{ID: id, Action: "Updated"}
+		if t, err := time.Parse(time.RFC3339, e.LastChanged); err == nil {
+			ce.LastChanged = t
+		}
+		out = append(out, ce)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
 }
