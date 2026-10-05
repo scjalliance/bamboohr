@@ -139,3 +139,53 @@ func TestChangedSinceWithType(t *testing.T) {
 		t.Fatalf("ChangedSince: %v", err)
 	}
 }
+
+// TestChangedTableSince covers the table-change endpoint's path, query and
+// response shape (verified live 2026-10-05).
+func TestChangedTableSince(t *testing.T) {
+	since := time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/employees/changed/tables/employmentStatus" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("since"); got != since.Format(time.RFC3339) {
+			t.Errorf("since = %q", got)
+		}
+		w.Write([]byte(`{"table":"employmentStatus","employees":{
+			"123":{"lastChanged":"2026-09-29T07:08:18Z","rows":[{"date":"2021-07-01","employmentStatus":"1.00","terminationTypeId":""}]},
+			"116":{"lastChanged":"2026-10-02T07:13:00Z","rows":[]}}}`))
+	}))
+	defer srv.Close()
+	c := testClient(t, srv)
+	got, err := c.ChangedTableSince(context.Background(), "employmentStatus", since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ID != "116" || got[1].ID != "123" || got[1].LastChanged.Day() != 29 || got[0].Action != "Updated" {
+		t.Fatalf("got %+v", got)
+	}
+	if _, err := c.ChangedTableSince(context.Background(), "", since); err == nil {
+		t.Error("empty table accepted")
+	}
+}
+
+// TestChangedTableSinceEmpty: a window with no changes answers "employees": []
+// (verified live), which is an empty result, not an error.
+func TestChangedTableSinceEmpty(t *testing.T) {
+	for _, body := range []string{`{"table":"jobInfo","employees":[]}`, `{"table":"jobInfo"}`, `{"table":"jobInfo","employees":null}`, `{"table":"jobInfo","employees":[ ]}`, "{\"employees\":[\n]}"} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(body)) }))
+		got, err := testClient(t, srv).ChangedTableSince(context.Background(), "jobInfo", time.Now())
+		srv.Close()
+		if err != nil || len(got) != 0 {
+			t.Errorf("%s: got %v, %v; want empty, nil", body, got, err)
+		}
+	}
+	// Any other shape is an error, never a silent "no changes".
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"employees":[{"id":"7"}]}`))
+	}))
+	defer srv.Close()
+	if _, err := testClient(t, srv).ChangedTableSince(context.Background(), "jobInfo", time.Now()); err == nil {
+		t.Error("unexpected shape decoded as no changes")
+	}
+}

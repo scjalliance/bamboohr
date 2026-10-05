@@ -28,6 +28,9 @@ identity-sync; suitable for general use.
 
     // Incremental:
     changed, _ := c.ChangedSince(ctx, since)
+    // Table edits (employment status, job info, custom tables) are reported
+    // per table:
+    statusChanged, _ := c.ChangedTableSince(ctx, "employmentStatus", since)
 
     // Metadata:
     fields, _ := c.Fields(ctx)
