@@ -85,9 +85,13 @@ func (c *Client) ChangedTableSince(ctx context.Context, table string, since time
 	var employees map[string]struct {
 		LastChanged string `json:"lastChanged"`
 	}
-	switch raw := bytes.TrimSpace(resp.Employees); string(raw) {
-	case "", "null", "[]":
+	raw := bytes.TrimSpace(resp.Employees)
+	var empty []json.RawMessage
+	switch {
+	case len(raw) == 0 || string(raw) == "null":
 		// Nothing changed in the window.
+	case raw[0] == '[' && json.Unmarshal(raw, &empty) == nil && len(empty) == 0:
+		// An empty array, however it is spaced: nothing changed.
 	default:
 		if err := json.Unmarshal(raw, &employees); err != nil {
 			return nil, fmt.Errorf("bamboohr: decode changed table employees: %w", err)

@@ -172,7 +172,7 @@ func TestChangedTableSince(t *testing.T) {
 // TestChangedTableSinceEmpty: a window with no changes answers "employees": []
 // (verified live), which is an empty result, not an error.
 func TestChangedTableSinceEmpty(t *testing.T) {
-	for _, body := range []string{`{"table":"jobInfo","employees":[]}`, `{"table":"jobInfo"}`, `{"table":"jobInfo","employees":null}`} {
+	for _, body := range []string{`{"table":"jobInfo","employees":[]}`, `{"table":"jobInfo"}`, `{"table":"jobInfo","employees":null}`, `{"table":"jobInfo","employees":[ ]}`, "{\"employees\":[\n]}"} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(body)) }))
 		got, err := testClient(t, srv).ChangedTableSince(context.Background(), "jobInfo", time.Now())
 		srv.Close()
