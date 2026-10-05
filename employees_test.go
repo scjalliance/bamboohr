@@ -168,3 +168,16 @@ func TestChangedTableSince(t *testing.T) {
 		t.Error("empty table accepted")
 	}
 }
+
+// TestChangedTableSinceEmpty: a window with no changes answers "employees": []
+// (verified live), which is an empty result, not an error.
+func TestChangedTableSinceEmpty(t *testing.T) {
+	for _, body := range []string{`{"table":"jobInfo","employees":[]}`, `{"table":"jobInfo"}`, `{"table":"jobInfo","employees":null}`} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(body)) }))
+		got, err := testClient(t, srv).ChangedTableSince(context.Background(), "jobInfo", time.Now())
+		srv.Close()
+		if err != nil || len(got) != 0 {
+			t.Errorf("%s: got %v, %v; want empty, nil", body, got, err)
+		}
+	}
+}

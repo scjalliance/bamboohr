@@ -1,7 +1,9 @@
 package bamboohr
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"sort"
@@ -73,15 +75,23 @@ func (c *Client) ChangedTableSince(ctx context.Context, table string, since time
 	q := url.Values{}
 	q.Set("since", since.Format(time.RFC3339))
 	var resp struct {
-		Employees map[string]struct {
-			LastChanged string `json:"lastChanged"`
-		} `json:"employees"`
+		// An object keyed by employee id, or an empty array when nothing
+		// changed in the window.
+		Employees json.RawMessage `json:"employees"`
 	}
 	if err := c.get(ctx, "api/v1/employees/changed/tables/"+url.PathEscape(table), q, &resp); err != nil {
 		return nil, err
 	}
-	out := make([]ChangedEmployee, 0, len(resp.Employees))
-	for id, e := range resp.Employees {
+	var employees map[string]struct {
+		LastChanged string `json:"lastChanged"`
+	}
+	if raw := bytes.TrimSpace(resp.Employees); len(raw) > 0 && raw[0] == '{' {
+		if err := json.Unmarshal(raw, &employees); err != nil {
+			return nil, fmt.Errorf("bamboohr: decode changed table employees: %w", err)
+		}
+	}
+	out := make([]ChangedEmployee, 0, len(employees))
+	for id, e := range employees {
 		ce := ChangedEmployee{ID: id, Action: "Updated"}
 		if t, err := time.Parse(time.RFC3339, e.LastChanged); err == nil {
 			ce.LastChanged = t
